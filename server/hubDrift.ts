@@ -89,6 +89,10 @@ export class HubDrift {
     this.sessions.delete(sessionId);
   }
 
+  reportedAt(sessionId: string): number {
+    return this.sessions.get(sessionId)?.at ?? 0;
+  }
+
   commits(sessionId: string) {
     return this.sessions.get(sessionId)?.commits ?? 0;
   }

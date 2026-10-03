@@ -62,7 +62,8 @@ export class DriftAnalyzer {
   /** Commit capturing the worktree's current contents (tracked + untracked, not ignored). */
   async snapshot(t: DriftTarget): Promise<string> {
     const indexPath = await gitOut(["rev-parse", "--path-format=absolute", "--git-path", "index"], t.worktree);
-    const tmpIndex = path.join(await this.tmp(), `index-${t.sessionId}`);
+    // Unique per call: concurrent snapshots of one worktree must never share an index file.
+    const tmpIndex = path.join(await this.tmp(), `index-${t.sessionId}-${process.hrtime.bigint()}-${Math.random().toString(36).slice(2)}`);
     const env = { GIT_INDEX_FILE: tmpIndex, GIT_OPTIONAL_LOCKS: "0" };
     try {
       const head = await gitOut(["rev-parse", "HEAD"], t.worktree);

@@ -134,7 +134,7 @@ async function main() {
     await rm(ROOT, { recursive: true, force: true, maxRetries: 3 });
   }
   await createFixture(ROOT);
-  console.log(`Demo repo ready at ${ROOT}\nStart the room with: npm run demo`);
+  console.log(`Demo repo ready at ${ROOT}\nStart the hub with: npm run demo  (then use this path as the Git URL when creating a room)`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(import.meta.filename)) main().catch((e) => {

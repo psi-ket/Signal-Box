@@ -1,6 +1,8 @@
-node_modules/
-web/dist/
-.demo/
+node_modules
+web/dist
+.data
+.demo
 .env
 *.log
-.data/
+test
+scripts/_*

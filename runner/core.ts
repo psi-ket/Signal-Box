@@ -49,6 +49,7 @@ interface LocalSession {
   lastDriftKey: string;
   stopped: boolean;
   disposeMcp: (() => void) | null;
+  driftChain: Promise<void>;
 }
 
 type Pending = { resolve: (m: Extract<HubToRunner, { type: "runner.answer" }>) => void };
@@ -271,7 +272,7 @@ export class RunnerCore {
     } catch (e) {
       return fail(`could not create a worktree: ${(e as Error).message}`);
     }
-    const s: LocalSession = { id: m.sessionId, worktree, repoRoot, baseRef, handle: null, analyzer: new DriftAnalyzer(repoRoot, baseRef), lastDriftKey: "", stopped: false, disposeMcp: null };
+    const s: LocalSession = { id: m.sessionId, worktree, repoRoot, baseRef, handle: null, analyzer: new DriftAnalyzer(repoRoot, baseRef), lastDriftKey: "", stopped: false, disposeMcp: null, driftChain: Promise.resolve() };
     this.sessions.set(s.id, s);
     try {
       const hooks = this.hooksFor(s);
@@ -297,6 +298,7 @@ export class RunnerCore {
     s.stopped = true;
     await s.handle?.cancel().catch(() => {});
     s.disposeMcp?.();
+    s.lastDriftKey = ""; // always send a final snapshot so the hub can close the recap promptly
     await this.reportDrift(s).catch(() => {});
   }
 
@@ -359,8 +361,13 @@ export class RunnerCore {
     for (const s of this.sessions.values()) if (!s.stopped) await this.reportDrift(s).catch(() => {});
   }
 
-  /** Snapshots the worktree (without touching it) and uploads changed files + a binary patch. */
-  async reportDrift(s: LocalSession) {
+  /** Snapshots the worktree (without touching it) and uploads changed files + a binary patch. Serialized per session. */
+  reportDrift(s: LocalSession): Promise<void> {
+    s.driftChain = s.driftChain.then(() => this.doReportDrift(s)).catch(() => {});
+    return s.driftChain;
+  }
+
+  private async doReportDrift(s: LocalSession) {
     try {
       const snap = await s.analyzer.snapshot({ sessionId: s.id, worktree: s.worktree });
       const baseSha = await gitOut(["merge-base", s.baseRef, snap], s.repoRoot);

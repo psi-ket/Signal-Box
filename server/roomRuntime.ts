@@ -213,7 +213,15 @@ export class RoomRuntime {
     }, 400).unref();
   }
 
-  async scanDrift() {
+  private scanChain: Promise<void> = Promise.resolve();
+
+  /** Scans run one at a time, in order, so an older scan can never overwrite a newer result. */
+  scanDrift(): Promise<void> {
+    this.scanChain = this.scanChain.then(() => this.doScan()).catch(() => {});
+    return this.scanChain;
+  }
+
+  private async doScan() {
     if (this.closed) return;
     const ids = this.room.state.sessionOrder.filter((id) => this.room.state.sessions[id]?.status !== "failed");
     if (!ids.length) return;
@@ -322,8 +330,15 @@ export class RoomRuntime {
 
   end(): Promise<void> {
     this.ending ??= (async () => {
+      const stoppedAt = Date.now();
       this.sessions.stopAll();
-      await new Promise((r) => setTimeout(r, 1500)); // let runners upload final drift snapshots
+      // Wait for each online runner to upload its final snapshot (bounded).
+      const waiting = () =>
+        this.sessions.sessionIds().filter((sid) => {
+          const rt = this.sessions.runtime(sid)!;
+          return this.deps.runners.get(rt.runnerId) && this.drift.reportedAt(sid) < stoppedAt;
+        });
+      for (const deadline = Date.now() + 6000; waiting().length && Date.now() < deadline; ) await new Promise((r) => setTimeout(r, 100));
       await this.scanDrift();
       const recap = await buildRecap(this.room.state, this.sessions, (sid) => this.drift.commits(sid), this.votes.ballotsCast());
       this.room.dispatch({ type: "recap", payload: recap });

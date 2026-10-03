@@ -1,276 +1,167 @@
-# Signal Box: collaborative agent supervision
+# Signal Box
 
-A host starts one server. Teammates open the site link, pick a name, and land in a lobby of rooms. Each room points at a git repo on the host. Inside a room everyone sees the coding agents working live, each on its own branch and worktree, and talks in the room chat. When an agent hits a real design decision, it becomes a timed team vote. Routine permission requests go only to the person who started that agent. A signal strip shows which agents touch the same files and which would actually conflict when merged.
+**Run a team of coding agents. Decide together.**
 
-Agents run on the host's machine with the host's logins. There is no cloud sandbox, no database and no accounts.
+Signal Box is a website where a team watches its coding agents work live, one room per project. When an agent hits a real design decision, it becomes a timed team vote. Risky commands go to the person who started that agent. A signal strip turns amber when agents touch the same file and red when Git confirms their changes won't merge.
 
-## Prerequisites
+```
+ browser ──https──▶  HUB (hosted)                         RUNNER (each teammate's machine)
+                     accounts · rooms · roles · chat  ◀──wss── npm run runner -- --hub … --token …
+                     votes · owner approvals                  clones the room's Git URL (your Git access)
+                     drift checks (bare mirror + patches)     one worktree + branch per agent
+                     SQLite                                   Claude / Codex / Gemini / OpenAI
+                                                              with your login or your own API key
+                                                              deny-by-default tool policy
+```
 
-- Node.js 22 or newer (tested on 24.3)
-- Git 2.38 or newer (merge-conflict detection uses `git merge-tree --write-tree`; tested on 2.46)
-- At least one agent. Each is detected at startup, and its real model list is loaded:
+**The hub never runs agent code.** It stores accounts, rooms and chat. It relays tasks to runners, runs votes, and checks uploaded patches for conflicts. Agents run on each teammate's own **runner** with that person's credentials. This is what makes it reasonable to host the hub on the internet.
 
-| Agent | Needs | Auth used |
-|---|---|---|
-| **Claude** (Agent SDK) | nothing extra | your Claude Code login, or `ANTHROPIC_API_KEY` in `.env` |
-| **Codex CLI** | `npm i -g @openai/codex` | your Codex CLI login (`codex login`, ChatGPT or API key) |
-| **Gemini CLI** | `npm i -g @google/gemini-cli` | `GEMINI_API_KEY` in `.env`, or your Gemini CLI Google login |
-| **Gemini API** | `GEMINI_API_KEY` in `.env` | the API key |
-| **OpenAI API** | `OPENAI_API_KEY` in `.env` | the API key |
-| **Mock** | `--allow-mock` | none (scripted, no AI) |
-
-- Optional, for remote teammates: [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) (`winget install Cloudflare.cloudflared`).
-
-## Setup and launch
+## Quick start (one machine, demo mode)
 
 ```bash
 npm install
-cp .env.example .env          # optional; add keys or change defaults
-npm start                     # lobby only
-npm start -- --repo /path/to/repo   # also creates a starter room for that repo
+npm run demo:setup     # creates .demo/todo-app, a fixture repo
+npm run demo           # hub + an in-process "host runner", local repo paths allowed
 ```
 
-`npm start` builds the web client and starts the server on `127.0.0.1:3003`. It lists the detected agents and prints two links:
+1. Open <http://localhost:3003> and **create an account**. The first account becomes the site admin.
+2. In **new room**, use the fixture path printed by `demo:setup` as the Git URL, set an optional password, and create the room.
+3. Teammates create accounts and join from the room list, or by opening the room's URL (`/rooms/<id>`). With `--lan`, use the address printed at startup.
+4. Each person spawns an agent with the **demo** buttons (storage, rebrand: taskforge, rebrand: todopro), then votes and watches the signals.
 
-- **Host:** includes the host key (`&h=…`). Open this one yourself. The host is admin in every room and is never blocked by a room's max people. The key is removed from the address bar after it loads.
-- **Teammates:** the site link (`#k=…`). Share it with your team.
+In demo mode the **host runner** runs everyone's agents on the hub machine. That's convenient on one laptop or a trusted LAN, but it means anyone with an account can run agents on your machine. Don't use `--host-runner` or `--allow-local-repos` on a public hub.
 
-The site key travels in the URL fragment, which is never sent in HTTP requests, so it doesn't end up in access logs.
+## Hosting on the internet
 
-Flags: `--repo <path>` (starter room), `--base <branch>`, `--lan`, `--port`, `--host`, `--tunnel`, `--allow-mock`. Every flag has an environment-variable equivalent in `.env.example`. Per-agent default models: `CLAUDE_MODEL`, `CODEX_MODEL`, `GEMINI_CLI_MODEL`, `GEMINI_MODEL`.
+```bash
+npm install && npm run build
+COLAB_PUBLIC_URL=https://signalbox.example.com npm run serve -- --host 0.0.0.0
+```
 
-### Rooms, passwords and roles
+- Put it behind HTTPS (Caddy, nginx, or a Cloudflare tunnel). Setting `COLAB_PUBLIC_URL` to an `https://` URL allows that origin and marks session cookies `Secure`.
+- Data lives in `.data/` (SQLite database plus bare repo mirrors). Back it up. `COLAB_DATA_DIR` and `COLAB_DB_FILE` move it.
+- `COLAB_REGISTRATION=closed` stops new sign-ups after the first (admin) account. `COLAB_ADMINS=alice,bob` makes those usernames site admins.
+- Rooms take `https://`, `ssh://` or `git@host:owner/repo` URLs. Local paths are refused unless `--allow-local-repos` is set.
 
-From the lobby, anyone with the site link can create a room. A room has:
+### Where to deploy
 
-- a **repo path** on the host machine (any folder that is a git repo with at least one commit) and an optional base branch;
-- an optional **password**, stored as a scrypt hash and never sent to clients;
-- **max people** (the host doesn't count against it);
-- the **role** new members get.
+The hub is a long-running Node server. It holds WebSocket connections and writes SQLite and Git mirrors to disk, so it needs a host that runs a container or process with a **persistent volume**: Railway, Render, Fly.io, or any VPS. **Serverless platforms such as Vercel or Netlify can't run it.** They can serve the static page, but sign-up, rooms and runners need the server.
+
+The included `Dockerfile` builds the client, installs `git`, listens on `$PORT` (or 3003), stores data in `/data`, and trusts the proxy's `X-Forwarded-For` for rate limits:
+
+1. Create a service from this repository using the Dockerfile.
+2. Attach a persistent volume at `/data`.
+3. Set `COLAB_PUBLIC_URL=https://<your domain>`. Optionally set `COLAB_REGISTRATION=closed` once your team has signed up.
+
+`.env` is excluded from the image, so no local keys end up in it. The hub needs no AI keys; those belong on runners.
+
+## Connecting your runner
+
+Your agents run on your machine. In **rooms → your runners**, give the runner a name and click **add runner**. The page shows a one-time command:
+
+```bash
+# in a checkout of Signal Box (git clone …; npm install)
+npm run runner -- --hub https://signalbox.example.com --token sbr_…
+```
+
+The runner checks which agents your machine has and connects. Your rooms then show it as online, and your **spawn agent** panel unlocks. It:
+
+- clones each room's Git URL into `~/.signalbox` with **your** Git credentials (private repos work if you can clone them);
+- creates one worktree and branch (`colab/<name>-<id>`) per agent, so agents never share files;
+- runs agents with **your** logins (Claude Code, Codex CLI, Gemini CLI) or with API keys from your environment or the **keys** panel;
+- enforces the tool policy locally and asks you before anything outside the safe list;
+- uploads changed-file lists and binary patches (not your files) so the hub can check for conflicts.
+
+Revoking a token in the web app disconnects that runner immediately. Ctrl+C stops the runner and removes worktrees that have no uncommitted work. Branches with commits stay in the runner's clone.
+
+| Agent | Needs on the runner | Uses |
+|---|---|---|
+| Claude (Agent SDK) | nothing extra | your Claude Code login, `ANTHROPIC_API_KEY`, or your own key from the keys panel |
+| Codex CLI | `npm i -g @openai/codex`, `codex login` | your Codex login |
+| Gemini CLI | `npm i -g @google/gemini-cli` | your Gemini login, `GEMINI_API_KEY`, or your own key |
+| Gemini API | `GEMINI_API_KEY` or your own key | the key |
+| OpenAI API | `OPENAI_API_KEY` or your own key | the key |
+| Mock | `--allow-mock` | nothing (scripted, for tests and offline demos) |
+
+### Your own API keys
+
+The **keys** panel (in the lobby, or a tab in each room) accepts Anthropic, OpenAI and Gemini keys. A key goes from your browser through the hub to **your runner**. The runner checks it by listing the vendor's models, keeps it in memory, and shows it back only masked (`AIza…1234 · 23 models`). When you spawn an agent you choose **runner login** or **my key**, and the model list comes from what your key can access. The hub never stores keys. Other people never see them.
+
+## Rooms, roles and chat
+
+A room has a name, a Git URL and base branch, an optional password (stored as a scrypt hash), a maximum number of people, and the role new members get.
 
 | Role | Can |
 |---|---|
 | viewer | watch agents, chat |
 | voter | + vote on team decisions |
-| editor | + start agents (choosing agent and model) and prompt, end or cancel their own |
-| admin | + change roles, remove people (they can't rejoin), end or cancel any agent, end or close the room |
+| editor | + spawn agents on their runner and prompt, end or cancel their own |
+| admin | + change roles, remove people (permanently), end or cancel any agent, end or close the room |
 
-The room creator is admin. Members who already joined can come back without the password. **End room** stops all agents and shows the recap. **Close room** also removes the room from the lobby and cleans up its worktrees.
+The creator is admin. Site admins are admin everywhere and aren't limited by max people. Members don't need the password again. Memberships, roles, bans and chat history are stored in the database and survive restarts. Live agent transcripts and votes don't.
 
-### Your own API keys
+## Decisions
 
-Anyone can open **your api keys** (in the lobby, or the **keys** tab in a room) and add their own Anthropic, OpenAI or Gemini key. The server checks the key by listing the vendor's models and shows the result, for example `[ok] AIza…1234 · 23 models`. When that person spawns an agent, they choose who pays: **host** or **my key**. With their key, the model list is the one their key can access.
+**Team votes** are used for design questions an agent asks through its question tool (`AskUserQuestion` for Claude, `ask_team` for the others). The card appears on every screen with a 30-second fuse.
 
-| Key | Runs |
-|---|---|
-| Anthropic | Claude agents |
-| OpenAI | OpenAI API agents |
-| Gemini | Gemini CLI and Gemini API agents |
+- Voters, editors and admins vote, one ballot each. Ballots are private; only counts are shown.
+- A strict majority wins. Voting closes early when every online voter has voted.
+- On a tie or no votes, the agent's owner picks. If the owner is offline or doesn't pick in time, the agent is told no decision was reached and to choose the most reversible option.
 
-Keys are kept in the host server's memory for that person only. They are never written to disk, never broadcast, and never sent back except masked. They are forgotten when the server restarts. A personal key is passed only to that person's agent process, and the host's own credentials are not passed alongside it. Codex CLI only supports a global login, so it always uses the host's login. Because the host machine runs the agent, the host can technically see the key; the UI says so.
+**Owner approvals** cover commands outside the safe list. Only the agent's owner sees the card. No answer, or an offline owner, means **deny**.
 
-### Teammates on the same network
+**Policy** (enforced on the runner): file tools are confined to the agent's worktree. Allowlisted commands run without asking: reads, `git status/diff/log/add/commit`, `npm test`, read-only PowerShell, and pipes and chains made only of these. Anything else goes to the owner. Dangerous commands are denied outright, and no vote can override that: `rm -rf`, `sudo`, network tools, `git push/reset --hard`, environment inspection, `Invoke-Expression`, paths outside the worktree, `.env`, `.git`.
 
-By default the server listens on `127.0.0.1`, which only works on the host machine. For teammates on the same Wi-Fi or LAN:
+## Drift signals
 
-```bash
-npm start -- --lan
-```
+Runners upload each agent's changed files and a binary patch against its base commit (every 10 seconds and after each turn). The hub keeps a bare mirror of the room's Git URL, rebuilds each agent's tree in a temporary index (`git apply --cached`), and runs `git merge-tree --write-tree` on agents that share a file.
 
-This listens on all interfaces and prints a teammate link for each real network adapter, such as `http://192.168.1.20:3003/#k=…`. If a teammate can't connect, check that the host's network is set to **Private** in Windows and that Node.js is allowed through Windows Firewall. Some guest and hotel networks block device-to-device traffic entirely; use `--tunnel` there. `ping` is not a useful test, because Windows blocks ICMP by default even when the app is reachable. Open `http://<host-ip>:3003/healthz` instead; it should return `{"ok":true}`.
+- **Amber:** the same file was changed by two or more agents.
+- **Red:** Git confirms the changes conflict. Overlap alone is never shown as red.
+- **Dashed:** not reported yet, failed, or stale. The strip always shows when it was last verified.
 
-### Teammates over the internet
+If the hub can't read the repo (private, and the hub has no credentials), the strip still shows shared files and says why conflicts aren't verified. Branches are never merged automatically.
 
-```bash
-npm start -- --tunnel
-```
+## Agent output
 
-This starts a Cloudflare quick tunnel and prints a `https://….trycloudflare.com/#k=…` teammate link. The tunnel origin is added to the allowed origins automatically.
+Replies render as Markdown (GitHub-flavored). Raw HTML from agents is never rendered, unsafe links are stripped, links open in a new tab, and remote images are shown as links.
 
-> The tunnel path has not been tested end to end on this machine because `cloudflared` is not installed here. Anyone holding the site link can create rooms that point agents at folders on the host, so share it only with people you trust with your machine.
+## Security model
 
-## Demo (2 minutes)
+- **Accounts:** passwords are hashed with scrypt. Login sessions use an HttpOnly, SameSite=Lax cookie; the database stores only a SHA-256 of the session token. Logins are rate-limited per IP and per account, sign-ups per IP. Unknown usernames and wrong passwords return the same message.
+- **CSRF:** state-changing API calls must be JSON and come from an allowed origin. WebSockets check the origin and the session.
+- **Runners:** tokens are hashed in the database and shown once. A personal runner only runs its owner's agents and only holds its owner's keys. Runner messages are schema-validated, and runners can only affect sessions they run.
+- **Git URLs** are validated (https/ssh/git only, no embedded credentials). Every clone and fetch blocks git's command-executing transports (`ext::`, `fd::`) with `GIT_ALLOW_PROTOCOL`.
+- **Runner machines:** agents run as you, on your machine. Worktrees and the command policy limit what agents do, but they are not an OS sandbox (Codex additionally uses its own `workspace-write` sandbox). Run a runner only for rooms you trust.
+- **Web client:** strict CSP, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`.
 
-```bash
-npm run demo:setup            # creates .demo/todo-app, a fixture repo separate from your work
-npm run demo                  # starts the server with a starter room on the fixture
-```
+## Configuration
 
-1. The host opens the host link. Three teammates open the teammate link and enter names. The link drops them straight into the demo room.
-2. Each person spawns one agent using the **demo** buttons (storage, rebrand: taskforge, rebrand: todopro) and picks Claude, Codex CLI or Gemini CLI.
-3. The Storage agent asks "Which database should the todo app use?". A cyan decision card with a 30-second fuse appears on every screen, and the chat logs it. Vote. The agent resumes and writes the choice into `README.md`.
-4. Storage and TaskForge both edit `README.md`, at the end and the top. The signal strip shows an amber **Shared file** row that "merges cleanly so far".
-5. The two Rebrand agents set `APP_NAME` to different values. Both lamps turn red with a verified **Merge conflict** on `src/config.js`.
-6. An admin clicks **end room** and confirms. Everyone sees the recap.
-
-**Backup plan.** Restart with `npm run demo -- --allow-mock` and choose **Mock (scripted, no AI)**. The demo buttons then fill in deterministic scripts that go through the same votes, policy, worktrees and drift tracker. Mock sessions are labelled `mock`. Also record a screen capture of a successful live run beforehand.
-
-## How it works
-
-```
-browser ─WebSocket (site key, origin, schema, rate checks)─▶ transport ─▶ app: identities, lobby
-                                                                           │
-                                                          room runtime (roles, password, chat) ×N
-                                                                           │
-             room state ◀─ shared reducer ◀─ events ◀──────────────────────┤
-                                                                           ├─▶ session manager ─▶ agent adapters
-                                                                           │        │   Claude SDK · Codex app-server · Gemini CLI (ACP) · Gemini API · mock
-                                                                           │        └─▶ policy ─▶ vote engine (team votes / owner decisions)
-                                                                           ├─▶ MCP endpoint (ask_team for CLI agents, loopback only)
-                                                                           └─▶ drift tracker ─▶ git (temp-index snapshots, merge-tree)
-```
-
-| Module | Responsibility |
-|---|---|
-| `shared/protocol.ts` | Zod schemas for every message; validated on server and client |
-| `shared/reducer.ts` | The single room-state transition function, used by both server and browser |
-| `server/app.ts` | Identities, lobby, room creation and routing |
-| `server/roomRuntime.ts` | One room: members, roles, password, chat, authorization |
-| `server/votes.ts` | Vote state machine; transport-independent |
-| `server/policy.ts` | Deny-by-default tool and command policy (bash and PowerShell) |
-| `server/agents/*` | Agent adapters; all SDK- and CLI-specific code lives here |
-| `server/mcp.ts` | Minimal MCP server that gives CLI agents the `ask_team` tool |
-| `server/sessions.ts` | Worktrees, agent lifecycle, and the bridge from agent events to room state |
-| `server/drift.ts` | Overlap and conflict detection |
-| `web/src/*` | React client: lobby, room, chat, people, votes |
-
-### Agents
-
-| | Claude | Codex CLI | Gemini CLI | Gemini API |
-|---|---|---|---|---|
-| How it runs | Agent SDK `query()` | `codex app-server` (JSON-RPC over stdio) | `gemini --acp` (Agent Client Protocol) | host function-calling loop |
-| Team questions | `AskUserQuestion` via `canUseTool` | `ask_team` dynamic tool, plus Codex's `requestUserInput` | `ask_team` via the host MCP endpoint | `ask_team` function |
-| Permission interception | `canUseTool` on every tool call | command and file-change approval requests | `session/request_permission` | host tools, every call |
-| Runs without asking the host | reads inside the worktree | commands Codex itself rates safe (read-only), inside its `workspace-write` sandbox | its own read-only tools inside the workspace | nothing |
-| Models | Opus 5.5, Sonnet 5.5, Haiku 4.5, Fable 5.1 | from `model/list` | from `session/new` | from the models API |
-| Verified live | `npm run poc`, `npm run live:e2e` | `scripts/poc-codex.ts`, `live:e2e -- --provider codex` | `scripts/poc-gemini-cli.ts`, `live:e2e -- --provider gemini-cli` | `live:e2e -- --provider gemini-api` |
-
-Agent replies are rendered as Markdown (GitHub-flavored). Raw HTML in agent output is never rendered, unsafe link schemes are stripped, links open in a new tab, and remote images are shown as links.
-
-Every agent is told to use its question tool for genuine team decisions and never for progress updates. Plain-text questions are never turned into votes.
-
-**Claude SDK contract (verified against `@anthropic-ai/claude-agent-sdk` 0.3.288).** `canUseTool(toolName, input, { signal, toolUseID, … })` returns `{ behavior: "allow", updatedInput }` or `{ behavior: "deny", message }`. For `AskUserQuestion`, the answer goes back as `updatedInput = { ...input, answers: { [questionText]: chosenLabel } }`.
-
-### Decisions: team votes and owner decisions
-
-**Team votes** are used for design questions from agents.
-
-- Voter, editor and admin roles vote; viewers watch. One ballot per person; re-votes, unknown options and late votes are rejected. Ballots are private; only counts are broadcast.
-- Voting closes at the 30-second deadline, or early once every online voter has voted. A strict majority wins.
-- On a tie or no votes, the agent's owner chooses within `COLAB_OWNER_WINDOW_SECONDS` (default 30). If the owner is offline or doesn't choose, the result is **no decision**: the agent is told to pick the most reversible option and state its assumption.
-- Openings and results are posted in the room chat.
-
-**Owner decisions** are used for routine permission requests, such as an agent wanting to run a command that isn't on the allowlist.
-
-- Only the agent's owner sees the card and decides. Approve allows that one call.
-- No answer within 30 seconds, or an owner who is offline, means **deny**. A fallback never approves anything.
-
-Each decision resolves exactly once. Cancelling an agent cancels its pending decisions.
-
-### Permission policy
-
-The host policy decides first. A decision can only approve something the policy put up for one.
-
-| Decision | Examples |
-|---|---|
-| Allow (no prompt) | File reads and edits inside the session worktree; allowlisted commands such as `ls`, `cat`, `rg`, `git status/diff/log/add/commit`, `npm test`, `npm run <script>`, `npx tsc/vitest/jest`, `node <file>`; read-only PowerShell such as `Get-Content`, `Get-ChildItem`, `Test-Path` and `Select-String`. Chains and pipes made only of these are allowed, plus `2>&1` and `>/dev/null`. |
-| Owner decides | Any other command, such as `npm install x`, `Set-Content`, other redirects, `xargs` or PowerShell script blocks |
-| Deny (nobody can override) | Paths outside the worktree, `.git/`, `.env`; `sudo`, `rm -rf`, `Remove-Item -Recurse`, network tools (`curl`, `Invoke-WebRequest`, `Invoke-RestMethod`, .NET web clients), `git push/reset --hard/clean/config/worktree`, environment inspection (`env`, `$env:`), nested shells, `Invoke-Expression`, `Start-Process`, command substitution, `~`, `..`, background processes, MCP tools, web fetch and search, sub-agents |
-
-Codex shell commands arrive wrapped (`pwsh.exe -Command '…'`) and are unwrapped before the policy checks them. API keys are only passed to the agent process that needs them.
-
-### Drift tracking
-
-Every 10 seconds, and right after any agent finishes a turn, each worktree is snapshotted without being touched:
-
-1. The worktree's index is copied to a temp file and `GIT_INDEX_FILE` is pointed at the copy.
-2. `git add -A` runs into the temp index. It respects `.gitignore` and picks up untracked files.
-3. `git write-tree` and `git commit-tree` produce a commit that is stored under the disposable ref `refs/colab/snapshots/<session>`.
-
-The working files, real index, HEAD and branches are never modified. Tests verify this with `git status --porcelain=v2` before and after.
-
-The changed files for a session are `git diff --name-status -M <merge-base(base, snapshot)> <snapshot>`. They include added, modified, deleted, renamed and untracked files. The merge-base is recomputed every scan, so the comparison follows `main` as it advances.
-
-- **Amber (Shared file):** two or more sessions changed the same path.
-- **Red (Merge conflict):** `git merge-tree --write-tree` on the two snapshots exits 1. Only pairs that share a path are checked. Overlap alone is never shown as a conflict.
-- **Dashed lamp:** not scanned yet, scan failed (the error is in the tooltip), or stale (no scan in the last 25 seconds). The strip always shows when the last scan was verified.
-
-Limitation: directory/file conflicts between sessions that share no path are not detected. Branches are never merged automatically.
-
-### Recap
-
-Lists objective indicators only: status, duration, files changed (from the final drift snapshot), commits on the session branch, test-command outcomes (denied test commands are not counted), decisions by resolution reason, votes cast per person, and unresolved conflicts. It does not claim an agent "shipped" anything.
-
-## WebSocket protocol
-
-Connect to `/ws` with subprotocols `["colab.v2", "token.<siteKey>"]`. The server rejects a missing or wrong key (401), a foreign `Origin` (403), or too many connections (503). Frames are JSON, at most 64 KB, and rate-limited per connection (burst 40, 20/s).
-
-Every message uses one envelope:
-
-```ts
-{ type, eventId, timestamp, roomId?, sessionId?, payload }   // room state events also carry `seq`
-```
-
-**Lobby (client → server):** `hello {name, participantId?, secret?, hostKey?}`, `room.create {name, repoPath, baseRef?, password?, maxPeople, defaultRole}`, `room.join {roomId, password?}`, `room.leave`.
-
-**Room (client → server):** `presence {viewingSessionId}`, `chat.send {text}`, `session.create {title, task, provider, model?}`, `session.prompt`, `session.cancel`, `session.end`, `vote.cast {voteId, optionId}`, `vote.resolve` (owner, after a tie or no votes), `member.role {participantId, role}` and `member.kick {participantId}` (admin), `snapshot.request`, `room.end` and `room.close` (admin).
-
-**Room state events** (applied by `shared/reducer.ts`, ordered by `seq`): `participant.upsert`, `participant.remove`, `session.upsert`, `transcript.append`, `transcript.delta`, `transcript.update`, `vote.upsert`, `chat.message`, `drift.report`, `recap`, `room.ended`.
-
-**Direct messages:** `lobby {participantId, secret, isHost, rooms, providers}`, `lobby.rooms {rooms}`, `welcome {roomId, role, myVotes, state}`, `snapshot`, `room.left {reason: left|kicked|closed}`, `vote.ack`, `error {code, message, replyTo}`.
-
-**Reconnect:** the client says hello again with its saved `participantId` and `secret`, rejoins its room (members don't need the password again), and receives a full snapshot. The reducer ignores any event whose `seq` it has already applied. Ballots are keyed by participant on the server, so reconnecting can never duplicate a vote. A wrong secret gets a new identity, never someone else's.
-
-## Security model and limitations
-
-- **Agents run with the host's user account and the host's AI logins. Git worktrees are not a security sandbox.** The path checks confine the agents' *file tools*. A shell command is a separate process, and the command policy is a best-effort, deny-by-default allowlist, not OS isolation. Codex additionally runs commands in its own `workspace-write` sandbox; the other agents have no OS-level sandbox.
-- **This design is for a trusted team, not the open internet.** Anyone with the site link can create a room on any git folder of the host and spend the host's AI quota. Don't post the site link publicly.
-- Site keys and host keys are 256-bit random values compared in constant time. Room passwords are scrypt-hashed. Participant secrets prevent identity spoofing between people who share the site link.
-- Everything is authorized on the server: roles, session ownership, owner-only decisions, admin actions. Watching a session grants no control.
-- API keys stay on the host and are only passed to the agent process that needs them. The policy blocks environment inspection and secret expansion. Tool output shown in the UI has host paths replaced with `.`.
-- The MCP endpoint that serves `ask_team` to CLI agents accepts loopback connections only, at a random per-session URL.
-- The web client is served with a strict CSP, `X-Frame-Options: DENY` and `Referrer-Policy: no-referrer`.
-
-## Cleanup
-
-On shutdown (Ctrl+C), the host stops agents, cancels open votes, removes worktrees that have no uncommitted changes, and deletes snapshot refs. Worktrees with uncommitted work are **kept** so nothing is lost, and their location is logged. Session branches (`colab/*`) are always kept.
-
-```bash
-npm run cleanup -- --repo /path/to/repo          # list colab worktrees, branches and refs
-npm run cleanup -- --repo /path/to/repo --yes    # remove them (uncommitted work is lost)
-```
+Hub flags: `--lan`, `--port` (default 3003), `--host`, `--tunnel`, `--data-dir`, `--host-runner`, `--allow-local-repos`, `--allow-mock`. Runner flags: `--hub`, `--token`, `--name`, `--data-dir`, `--allow-mock`, `--allow-local-repos`. Everything else is in `.env.example`.
 
 ## Testing
 
 ```bash
-npm test             # unit, integration and browser tests (mock agents; no API usage)
+npm test                                      # 76 tests: units, hub+runner integration, browser (mock agents)
 npm run typecheck
-npm run poc                                   # LIVE: one Claude agent; question intercepted, answered, resumed
-npx tsx scripts/poc-codex.ts                  # LIVE: Codex app-server dynamic tool + approvals
-npx tsx scripts/poc-gemini-cli.ts             # LIVE: Gemini CLI ACP + MCP ask_team + permissions
-npm run live:e2e -- --provider claude         # LIVE: full demo flow, three agents, three participants
-npm run live:e2e -- --provider codex          #   (also gemini-cli, gemini-api; add --model <id>)
+npm run live:e2e -- --provider claude         # LIVE: 3 accounts, 3 personal runners, real agents
+npm run live:e2e -- --provider codex          #   also gemini-cli, gemini-api, openai-api
+npm run live:e2e -- --provider gemini-cli --own-key   # agents billed to participants' own keys
+npx tsx scripts/poc-ask.ts | poc-codex.ts | poc-gemini-cli.ts   # protocol proofs of concept
 ```
 
 | Suite | Covers |
 |---|---|
-| `test/votes.test.ts` | Majority, early close, tie, no votes, owner absent or timeout, reconnect grace, duplicate, invalid and late votes, exactly-once resolution, malformed options, concurrent decisions, cancellation, ballot privacy, owner-only decisions |
-| `test/policy.test.ts` | Worktree confinement, Windows/Git Bash paths, allow/owner/deny classes, quote-aware command splitting, real commands seen from Claude and Codex (bash and PowerShell), shell-wrapper unwrapping, Gemini CLI permission mapping |
-| `test/drift.test.ts` | Untracked, deleted and renamed files; clean overlap vs real conflict; worktrees untouched; refs cleaned; base advancing; per-session errors |
-| `test/server.test.ts` | Site key and origin rejection, validation, non-git folders, room passwords, lobby listing without secrets, three worktrees and branches, streaming, vote and resume, reconnect without duplicate votes, unknown models, chat, owner-only permissions, ownership, roles (viewer, voter, editor, admin), max people and host exemption, kicking, conflict alerts, owner-offline deny, cancellation, recap, room close and cleanup |
-| `test/mcp.test.ts` | MCP handshake, `ask_team` routing, rejected questions, unknown tokens and tools, disposal |
-| `test/gemini.test.ts` | Gemini API loop against a **stubbed** API: tool calls, `ask_team`, policy enforcement, key never leaked |
-| `test/browser.test.ts` | Three headless Chrome/Edge profiles: lobby, room creation, deep link with password prompt (wrong then right), join from list, chat, vote by clicking, role change, amber and red lamps, recap, phone width (skipped if no Chrome/Edge or no build) |
+| `auth.test.ts` | Registration (first user admin, validation, duplicates), login/logout, cookie flags, no user enumeration, CSRF and content-type checks, login and sign-up rate limits, hashes-only storage, closed registration |
+| `runner.test.ts` | Git URL safety, key checks (stubbed vendors), runner pairing with hashed tokens, agents run only on their owner's runner, keys held on the runner and never shown to others, own-key sessions, revocation fails live agents |
+| `server.test.ts` | Hub + in-process runner: WebSocket auth and origin, room passwords, membership memory, worktrees per agent (paths never leak), team votes and resume, owner-only approvals, runner-side policy, roles, verified conflicts from patches, persistent kicks, max people, owner-offline deny, recap, persistence across restart, closing rooms |
+| `votes.test.ts`, `policy.test.ts`, `drift.test.ts`, `mcp.test.ts`, `gemini.test.ts` | Vote state machine, bash and PowerShell policy, local snapshots, the MCP `ask_team` endpoint, the Gemini and OpenAI tool loops (stubbed APIs) |
+| `browser.test.ts` | Headless Chrome/Edge: landing page and its animation, redirect to sign-in, sign-up, room creation from a Git URL, password prompt, joining from the list, chat, voting, Markdown, amber and red lamps, recap, sign-out, phone width |
 
-| `test/keys.test.ts` | Key checks against **stubbed** vendor APIs, model filtering, masking, privacy (never echoed or shared), own-key sessions get the owner's key and model list, clearing keys |
+**Last live results on this machine:** Claude, Codex CLI, Gemini CLI (with participants' own keys) and Gemini API each passed every check through personal runners. The OpenAI API agent and personal Anthropic/OpenAI keys are tested only against stubbed APIs, because no OpenAI or Anthropic API key was available here.
 
-Integration and browser tests use the **mock** provider. Real agents are verified only by the live scripts above (`--own-key` runs the agents on participant keys with the host key removed). Last live results on this machine: Claude, Codex CLI, Gemini CLI and Gemini API each passed all demo checks; Gemini API and Gemini CLI also passed in own-key mode. The OpenAI API agent and own Anthropic/OpenAI keys are tested only against stubbed APIs; no OpenAI or Anthropic API key was available here.
+## Notes
 
-## Troubleshooting
-
-- **"Web client not built"**: run `npm run build`, or use `npm start`, which builds first.
-- **Browser shows "Can't join"**: the link is missing `#k=…`, the server was restarted (keys change on every start), or the page is served from an origin that isn't allowed. For LAN or VPN access, add your origin to `COLAB_ALLOWED_ORIGINS`.
-- **Claude sessions fail immediately**: check that `claude` works in a terminal, or set `ANTHROPIC_API_KEY`. Logs go to stderr as JSON lines (`COLAB_LOG_LEVEL=debug` for more).
-- **Agent keeps getting denied**: read the denial reason in the tool row. Commands that need a vote show a Permission card. Hard-denied commands can't be approved by design.
-- **Red lamp never appears**: check `git --version` is 2.38 or newer, or that `COLAB_CONFLICT_CHECK` isn't `0`. The strip says "conflict check off" when it's disabled.
-- **Leftover worktrees after a crash**: `npm run cleanup -- --repo <path>`.
+- Requires Node.js 22.13+ (uses the built-in `node:sqlite`, which prints an "experimental" warning) and Git 2.38+.
+- The runner is started from a checkout of this repository. Publishing it as an npm package would allow `npx signalbox-runner`; that isn't done yet.
+- `npm run cleanup -- --repo <path> [--yes]` lists or removes leftover `colab/*` worktrees, branches and refs in a runner's clone.

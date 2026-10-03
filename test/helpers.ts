@@ -50,6 +50,7 @@ export async function testConfig(over: Partial<Config> = {}): Promise<Config> {
     adminUsernames: [],
     secureCookies: false,
     registerPerHour: 1000,
+    trustProxy: false,
     ...over,
   };
 }

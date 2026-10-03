@@ -34,6 +34,7 @@ export interface ApiOptions {
   secureCookies: boolean;
   /** Successful sign-ups allowed per IP per hour. */
   registerPerHour: number;
+  trustProxy?: boolean;
   onRunnerRevoked?: (tokenId: string) => void;
 }
 
@@ -102,7 +103,10 @@ export function createApi(o: ApiOptions) {
       req.on("error", reject);
     });
 
-  const ip = (req: http.IncomingMessage) => req.socket.remoteAddress ?? "?";
+  const ip = (req: http.IncomingMessage) => {
+    const fwd = o.trustProxy ? String(req.headers["x-forwarded-for"] ?? "").split(",")[0]!.trim() : "";
+    return fwd || req.socket.remoteAddress || "?";
+  };
 
   async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
     const url = new URL(req.url ?? "/", "http://x");

@@ -26,6 +26,8 @@ export interface Config {
   adminUsernames: string[];
   secureCookies: boolean;
   registerPerHour: number;
+  /** Behind a reverse proxy: take the client IP from X-Forwarded-For for rate limits. */
+  trustProxy: boolean;
 }
 
 const num = (v: string | undefined, d: number) => (v !== undefined && v !== "" && Number.isFinite(Number(v)) ? Number(v) : d);
@@ -55,7 +57,8 @@ export function loadConfig(argv = process.argv.slice(2), projectRoot = process.c
   return {
     // --lan listens on every interface so teammates on the same network can connect.
     host: values.host || e.COLAB_HOST || (lan ? "0.0.0.0" : "127.0.0.1"),
-    port: num(values.port ?? e.COLAB_PORT, 3003),
+    // PORT is what most hosts (Railway, Render, Fly.io) assign.
+    port: num(values.port ?? (e.COLAB_PORT || e.PORT), 3003),
     tunnel: values.tunnel ?? flag(e.COLAB_TUNNEL),
     allowedOrigins: [...(e.COLAB_ALLOWED_ORIGINS ?? "").split(","), publicUrl].map((s) => s.trim().replace(/\/$/, "")).filter(Boolean),
     voteMs: num(e.COLAB_VOTE_SECONDS, 30) * 1000,
@@ -74,5 +77,6 @@ export function loadConfig(argv = process.argv.slice(2), projectRoot = process.c
     adminUsernames: (e.COLAB_ADMINS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
     secureCookies: flag(e.COLAB_SECURE_COOKIES) || publicUrl.startsWith("https://"),
     registerPerHour: num(e.COLAB_REGISTER_PER_HOUR, 10),
+    trustProxy: flag(e.COLAB_TRUST_PROXY),
   };
 }

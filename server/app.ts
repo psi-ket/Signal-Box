@@ -64,6 +64,7 @@ export async function createApp(opts: AppOptions) {
     adminUsernames: config.adminUsernames,
     secureCookies: config.secureCookies,
     registerPerHour: config.registerPerHour,
+    trustProxy: config.trustProxy,
     onRunnerRevoked: (tokenId) => registry.revokeToken(tokenId),
   });
 

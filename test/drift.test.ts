@@ -100,6 +100,19 @@ describe("drift analyzer", () => {
     expect(r2.sessions.x!.files.map((f) => f.path)).not.toContain("c.txt");
   });
 
+  it("concurrent snapshots of one worktree never produce an empty tree", async () => {
+    const r0 = await makeRepo({ "a.txt": "a\n", "b.txt": "b\n" });
+    const w = path.join(r0, ".git", "colab", "worktrees", "c");
+    await addWorktree(r0, w, "colab/c", "main");
+    await writeFiles(w, { "a.txt": "changed\n" });
+    const an = new DriftAnalyzer(r0, "main");
+    const snaps = await Promise.all(Array.from({ length: 8 }, () => an.snapshot({ sessionId: "c", worktree: w })));
+    for (const snap of snaps) {
+      const files = await an.changedFiles(await gitOut(["rev-parse", "main"], r0), snap);
+      expect(files).toEqual([{ path: "a.txt", status: "M" }]);
+    }
+  });
+
   it("surfaces scan errors per session instead of failing the report", async () => {
     const an = new DriftAnalyzer(repo, "main");
     const r = await an.scan([{ sessionId: "gone", worktree: path.join(repo, "does-not-exist") }], { conflictCheck: true });
